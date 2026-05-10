@@ -2,17 +2,52 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 import tkinter as tk
-from tkinter import messagebox, filedialog
+from tkinter import messagebox, filedialog, ttk
 import pandas as pd
 import json
 import os
 import sys
 import asyncio
+import base64
 import threading
+from io import BytesIO
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 import websockets
 from shared.logging_config import configure_logging
+
+try:
+    from PIL import Image, ImageTk
+except ImportError:  # Pillow ist eine optionale Anzeige-Abhaengigkeit
+    Image = None
+    ImageTk = None
+
+
+def _base64url_decode(data: str) -> bytes:
+    padding = "=" * (-len(data) % 4)
+    return base64.urlsafe_b64decode(data + padding)
+
+
+def parse_dokume_qr(scanned: str) -> dict:
+    """Parse a Dokumetra-Pass QR/JWT-string. Mirrors real_scanner.parse_dokume_qr,
+    inline gehalten damit gui.py keine Subprocess-Importe braucht."""
+    payload_b64 = scanned.strip().split(".", 1)[0]
+    payload = json.loads(_base64url_decode(payload_b64))
+
+    fn = payload.get("FN")
+    ln = payload.get("LN")
+    dob = payload.get("DOB")
+    exp = payload.get("exp")
+    if not fn or not ln or dob is None or exp is None:
+        raise ValueError("missing fields")
+
+    return {
+        "first_name": fn,
+        "last_name": ln,
+        "name": f"{ln} {fn}".strip(),
+        "birth_year": int(str(dob).split("-")[0]),
+        "exp_timestamp": int(exp),
+    }
 
 logger = configure_logging("gui")
 
@@ -32,16 +67,16 @@ DEFAULT_MIN_AGE_YEARS = 6
 DEFAULT_MAX_AGE_YEARS = 120
 
 THEME = {
-    "bg": "#1e1e1e",        # VSCode Dark+ Background
-    "fg": "#f0f0f2",        # text
-    "accent": "#22AAF0",    # PO Palette: Fresh Sky
-    "secondary": "#252526", # VSCode Dark+ Sidebar/Secondary
-    "input_bg": "#3c3c3c",  # VSCode Dark+ Input Field
-    "input_fg": "#f0f0f2",  # text
-    "success": "#4CCD70",   # PO Palette: Emerald
-    "error": "#B7413F",     # Option 3: Earthy Brick Red
-    "männlich" : "#22AAF0", # PO Palette: Fresh Sky
-    "weiblich" : "#E590E8"  # PO Palette: Violet
+    "bg": "#ffffff",        # Light: white main background
+    "fg": "#1e1e1e",        # near-black text
+    "accent": "#1B7FBE",    # darker Fresh Sky for contrast on white
+    "secondary": "#e8eaed", # light grey for sidebar / Kamera-Platzhalter
+    "input_bg": "#f5f5f5",  # very light grey input field (subtle vs white bg)
+    "input_fg": "#1e1e1e",  # near-black input text
+    "success": "#2E7D32",   # forest green
+    "error": "#B7413F",     # Earthy Brick Red (kept)
+    "männlich": "#1B7FBE",  # matches accent
+    "weiblich": "#C36CD0",  # darker violet for legibility on light bg
 }
 
 
@@ -112,7 +147,7 @@ class WeighingApp(tk.Tk):
         right_actions.pack(side=tk.RIGHT)
 
         btn_opts = {
-            "bg": THEME["input_bg"], "fg": "#f0f0f2",
+            "bg": THEME["input_bg"], "fg": THEME["fg"],
             "font": ("Rubik", 10, "bold"), "bd": 1,
             "relief": "flat", "height": 2, "cursor": "hand2"
         }
@@ -120,9 +155,9 @@ class WeighingApp(tk.Tk):
         add_btn_opts = dict(btn_opts)
         add_btn_opts.update(
             {
-                "bg": "#f0f0f2",
+                "bg": THEME["fg"],
                 "fg": "black",
-                "activebackground": "#f0f0f2",
+                "activebackground": THEME["fg"],
                 "activeforeground": "black",
             }
         )
@@ -155,7 +190,7 @@ class WeighingApp(tk.Tk):
             self.duplicate_warning_frame,
             text="Achtung: Mehrere Personen gefunden",
             bg=THEME["error"],
-            fg="#f0f0f2",
+            fg=THEME["fg"],
             font=("Rubik", 14, "bold"),
             padx=20,
             pady=10,
@@ -168,9 +203,9 @@ class WeighingApp(tk.Tk):
             text="x",
             command=self.hide_duplicate_warning,
             bg=THEME["error"],
-            fg="#f0f0f2",
+            fg=THEME["fg"],
             activebackground=THEME["error"],
-            activeforeground="#f0f0f2",
+            activeforeground=THEME["fg"],
             bd=0,
             relief="flat",
             font=("Rubik", 9, "bold"),
@@ -197,7 +232,7 @@ class WeighingApp(tk.Tk):
 
     def create_entry_value(self, parent, r, c):
         """Creates an editable entry field at the specified grid position."""
-        entry = tk.Entry(parent, bg=THEME["input_bg"], fg="#f0f0f2", font=("Rubik", 14), justify="left", width=FIELD_WIDTH)
+        entry = tk.Entry(parent, bg=THEME["input_bg"], fg=THEME["fg"], font=("Rubik", 14), justify="left", width=FIELD_WIDTH)
         entry.grid(row=r, column=c, padx=14, pady=(5, 14), ipady=4, sticky="n")
         return entry
 
@@ -319,9 +354,9 @@ class WeighingApp(tk.Tk):
         if hasattr(self, "btn_save"):
             self.btn_save.config(
                 bg=THEME["input_bg"],
-                fg="#f0f0f2",
+                fg=THEME["fg"],
                 activebackground=THEME["input_bg"],
-                activeforeground="#f0f0f2",
+                activeforeground=THEME["fg"],
             )
 
     def update_save_button_state(self, _event=None):
@@ -331,8 +366,8 @@ class WeighingApp(tk.Tk):
         if not self.selected_participant:
             if hasattr(self, "details_box_frame"):
                 self.details_box_frame.config(
-                    highlightbackground="#f0f0f2",
-                    highlightcolor="#f0f0f2",
+                    highlightbackground=THEME["fg"],
+                    highlightcolor=THEME["fg"],
                 )
             self.set_save_button_default_style()
             if hasattr(self, "save_state_hint_label"):
@@ -350,9 +385,9 @@ class WeighingApp(tk.Tk):
                 )
             self.btn_save.config(
                 bg=THEME["error"],
-                fg="#f0f0f2",
+                fg=THEME["fg"],
                 activebackground=THEME["error"],
-                activeforeground="#f0f0f2",
+                activeforeground=THEME["fg"],
             )
             if hasattr(self, "save_state_hint_label"):
                 self.save_state_hint_label.config(
@@ -382,8 +417,8 @@ class WeighingApp(tk.Tk):
 
         if hasattr(self, "details_box_frame"):
             self.details_box_frame.config(
-                highlightbackground="#f0f0f2",
-                highlightcolor="#f0f0f2",
+                highlightbackground=THEME["fg"],
+                highlightcolor=THEME["fg"],
             )
         self.set_save_button_default_style()
         if hasattr(self, "save_state_hint_label"):
@@ -502,12 +537,32 @@ class WeighingApp(tk.Tk):
         return datetime.now().timestamp() <= exp
 
     def apply_qr_match(self, qr_data: Dict[str, Any]):
-        """Matches QR data by exact full identity first, then falls back to search filter."""
+        """Verarbeitet QR-Scan: Status-Banner aktualisieren, Suchfeld setzen,
+        ggf. exakten Treffer auswaehlen. Kein Modal mehr."""
         qr_first = str(qr_data.get("first_name") or "").strip().lower()
         qr_last = str(qr_data.get("last_name") or "").strip().lower()
         qr_name = str(qr_data.get("name") or "").strip()
+        if not qr_name:
+            qr_name = " ".join(
+                p for p in (
+                    str(qr_data.get("first_name") or "").strip(),
+                    str(qr_data.get("last_name") or "").strip(),
+                ) if p
+            )
         qr_birth_year = self._normalize_birth_year(qr_data.get("birth_year"))
+        qr_is_valid = self._qr_is_valid(qr_data.get("exp_timestamp"))
 
+        # Status-Banner unter dem Scanner-Bild aktualisieren
+        self.set_scanner_status(qr_data, qr_is_valid)
+
+        # Suchfeld setzen - search_var.trace ruft filter_list automatisch auf,
+        # die Liste wird also schon nach dem Namen gefiltert.
+        if qr_name and hasattr(self, "search_var"):
+            self.search_var.set(qr_name)
+            if hasattr(self, "search_entry"):
+                self.search_entry.configure(fg=THEME["input_fg"])
+
+        # Versuch eines exakten Treffers zur Auto-Auswahl
         exact_matches = []
         for p in self.participants:
             first = str(p.get("Firstname") or "").strip().lower()
@@ -517,110 +572,135 @@ class WeighingApp(tk.Tk):
                 exact_matches.append(p)
 
         if exact_matches:
-            qr_is_valid = self._qr_is_valid(qr_data.get("exp_timestamp"))
-            exact_matches[0][VALID_KEY] = qr_is_valid
-            self.update_list(exact_matches)
+            match = exact_matches[0]
+            match[VALID_KEY] = qr_is_valid
+            self.selected_participant = match
+            try:
+                idx = self.visible_participants.index(match)
+                self.listbox.selection_clear(0, tk.END)
+                self.listbox.selection_set(idx)
+                self.listbox.activate(idx)
+                self.listbox.see(idx)
+            except (ValueError, tk.TclError):
+                pass
+            self.show_details(match)
             if len(exact_matches) > 1:
                 self.show_duplicate_warning()
             else:
                 self.hide_duplicate_warning()
-
-            self.selected_participant = exact_matches[0]
-            self.listbox.selection_clear(0, tk.END)
-            self.listbox.selection_set(0)
-            self.listbox.activate(0)
-            self.listbox.see(0)
-            self.show_details(exact_matches[0])
-            return
-
-        filtered = self.get_filtered_participants(qr_name)
-        self.update_list(filtered)
-        self.listbox.selection_clear(0, tk.END)
-        self.clear_participant_details()
-        if len(filtered) > 1:
-            self.show_duplicate_warning()
+        elif self.visible_participants:
+            # Kein exakter Treffer: bestes Suchergebnis (Top der gefilterten Liste)
+            # automatisch auswaehlen.
+            best = self.visible_participants[0]
+            self.selected_participant = best
+            try:
+                self.listbox.selection_clear(0, tk.END)
+                self.listbox.selection_set(0)
+                self.listbox.activate(0)
+                self.listbox.see(0)
+            except tk.TclError:
+                pass
+            self.show_details(best)
+            if len(self.visible_participants) > 1:
+                self.show_duplicate_warning()
+            else:
+                self.hide_duplicate_warning()
         else:
+            self.listbox.selection_clear(0, tk.END)
+            self.clear_participant_details()
             self.hide_duplicate_warning()
-        qr_status = "gültig" if self._qr_is_valid(qr_data.get("exp_timestamp")) else "abgelaufen"
-        self.show_qr_mismatch_warning(qr_status)
 
-    def show_qr_mismatch_warning(self, qr_status: str):
-        """Shows styled warning popup for QR mismatches."""
+    def set_scanner_status(self, qr_data: Dict[str, Any], is_valid: bool):
+        """Aktualisiert das Status-Banner unter dem Scanner-Kamerabild."""
+        if not hasattr(self, "scanner_status_label"):
+            return
+        first = str(qr_data.get("first_name") or "").strip()
+        last = str(qr_data.get("last_name") or "").strip()
+        name = " ".join(p for p in (first, last) if p) or str(qr_data.get("name") or "")
+        if is_valid:
+            text = f"✓ Pass gültig — {name}".strip(" —")
+            bg = THEME["success"]
+        else:
+            text = f"✗ Pass abgelaufen — {name}".strip(" —")
+            bg = THEME["error"]
+        self.scanner_status_label.config(text=text, bg=bg, fg="#ffffff")
+
+    # ------------------------------------------------------------------
+    # Scanner-Modus (Kamera vs. Hardware-USB-Scanner)
+    # ------------------------------------------------------------------
+    def _apply_scanner_mode_ui(self):
+        """Packt scanner_camera_label oder scanner_hardware_button je nach Modus.
+        Status-Banner bleibt in beiden Modi unten sichtbar."""
+        if not hasattr(self, "scanner_cell"):
+            return
+        # Vorhandene Inhalte ausblenden
+        self.scanner_camera_label.pack_forget()
+        self.scanner_hardware_button.pack_forget()
+        self.scanner_status_label.pack_forget()
+
+        if getattr(self, "scanner_mode", "camera") == "hardware":
+            self.scanner_hardware_button.pack(fill="both", expand=True)
+        else:
+            self.scanner_camera_label.pack(fill="both", expand=True)
+        self.scanner_status_label.pack(fill="x", pady=(4, 0))
+
+    def open_hardware_scan_input(self):
+        """Modal mit Entry, in das der USB-Scanner den QR-String tippt.
+        Auf Enter wird der String geparst und wie ein Kamera-Scan dispatcht."""
         popup = tk.Toplevel(self)
-        popup.title("Kein 100%-Treffer")
+        popup.title("Pass scannen")
         popup.configure(bg=THEME["bg"])
         popup.resizable(False, False)
         popup.transient(self)
         popup.grab_set()
 
-        popup_w = 520
-        popup_h = 260
-        if hasattr(popup, "update_idletasks"):
-            popup.update_idletasks()
+        frame = tk.Frame(popup, bg=THEME["bg"], padx=20, pady=18)
+        frame.pack()
+
+        tk.Label(
+            frame,
+            text="Bitte den QR-Code mit dem Scanner einlesen.",
+            bg=THEME["bg"],
+            fg=THEME["fg"],
+            font=("Rubik", 12),
+        ).pack(pady=(0, 10))
+
+        entry = tk.Entry(frame, font=("Rubik", 12), width=50,
+                         bg=THEME["input_bg"], fg=THEME["input_fg"])
+        entry.pack()
+        entry.focus_set()
+
+        def submit(_event=None):
+            scanned = entry.get().strip()
+            popup.destroy()
+            if not scanned:
+                return
+            try:
+                info = parse_dokume_qr(scanned)
+            except Exception as exc:
+                logger.warning("Hardware-Scan: konnte QR nicht parsen: %s", exc)
+                self.set_scanner_status({"first_name": "?", "last_name": ""}, False)
+                return
+            self.handle_incoming_qr(info)
+
+        entry.bind("<Return>", submit)
+        popup.bind("<Escape>", lambda _e: popup.destroy())
+
+        popup.update_idletasks()
         try:
-            self.update_idletasks()
-            root_x = self.winfo_rootx()
-            root_y = self.winfo_rooty()
-            root_w = self.winfo_width()
-            root_h = self.winfo_height()
-            x = root_x + (root_w - popup_w) // 2
-            y = root_y + (root_h - popup_h) // 2
+            x = self.winfo_rootx() + (self.winfo_width() - popup.winfo_width()) // 2
+            y = self.winfo_rooty() + (self.winfo_height() - popup.winfo_height()) // 3
+            popup.geometry(f"+{max(x, 0)}+{max(y, 0)}")
         except Exception:
-            screen_w = popup.winfo_screenwidth()
-            screen_h = popup.winfo_screenheight()
-            x = (screen_w - popup_w) // 2
-            y = (screen_h - popup_h) // 2
-        popup.geometry(f"{popup_w}x{popup_h}+{max(x, 0)}+{max(y, 0)}")
+            pass
 
-        is_valid = str(qr_status).strip().lower() == "gültig"
-        status_color = THEME["success"] if is_valid else THEME["error"]
-
-        tk.Label(
-            popup,
-            text="keinen vollständig übereinstimmenden Daten gefunden.",
-            bg=THEME["bg"],
-            fg=THEME["fg"],
-            font=("Rubik", 12, "bold"),
-            wraplength=470,
-            justify="center",
-        ).pack(pady=(24, 10), padx=20)
-
-        status_frame = tk.Frame(popup, bg=THEME["bg"])
-        status_frame.pack(pady=(0, 12))
-        tk.Label(
-            status_frame,
-            text="QR Code ist ",
-            bg=THEME["bg"],
-            fg=THEME["fg"],
-            font=("Rubik", 14),
-        ).pack(side=tk.LEFT)
-        tk.Label(
-            status_frame,
-            text=qr_status,
-            bg=THEME["bg"],
-            fg=status_color,
-            font=("Rubik", 20, "bold"),
-        ).pack(side=tk.LEFT)
-
-        tk.Label(
-            popup,
-            text="Bitte manuel ändern.",
-            bg=THEME["bg"],
-            fg=THEME["fg"],
-            font=("Rubik", 11),
-        ).pack(pady=(0, 18))
-
-        tk.Button(
-            popup,
-            text="OK",
-            command=popup.destroy,
-            bg=THEME["input_bg"],
-            fg="#f0f0f2",
-            activebackground=THEME["input_bg"],
-            activeforeground="#f0f0f2",
-            font=("Rubik", 10, "bold"),
-            width=12,
-        ).pack()
+    def _handle_qr_scan_request(self, _event=None):
+        """F12-Dispatcher: im Hardware-Modus oeffnet das Input-Modal,
+        sonst sendet OPEN_SCAN_POPUP an den real_scanner-Subprocess."""
+        if getattr(self, "scanner_mode", "camera") == "hardware":
+            self.open_hardware_scan_input()
+        else:
+            self.trigger_qr_scan_hotkey()
 
     def search_participants(self, query: str) -> list[dict]:
         q = (query or "").lower().strip()
@@ -739,6 +819,10 @@ class WeighingApp(tk.Tk):
     def update_list(self, data: List[Dict]):
         """Refreshes the sidebar listbox with the provided data."""
         self.visible_participants = list(data)
+        # Schutz: filter_list kann ueber search_var-trace feuern, bevor listbox
+        # in __init__ erzeugt ist. (Reproduzierbar auf macOS waehrend Startup.)
+        if not hasattr(self, "listbox"):
+            return
         self.listbox.delete(0, tk.END)
         if not self.visible_participants:
             self.listbox.insert(tk.END, "kein Teilnehmer gefunden")
@@ -771,10 +855,11 @@ class WeighingApp(tk.Tk):
             bg = THEME["input_bg"]
             fg = THEME["input_fg"]
             if i in selected_indices:
-                bg = "#ffffff"
-                fg = "#000000"
+                bg = THEME["accent"]
+                fg = "#ffffff"
             elif hovered_index is not None and i == hovered_index and i < len(self.visible_participants):
                 bg = THEME["accent"]
+                fg = "#ffffff"
             self.listbox.itemconfig(i, bg=bg, fg=fg)
 
     def on_listbox_motion(self, event):
@@ -839,6 +924,9 @@ class WeighingApp(tk.Tk):
         self.max_age_years = DEFAULT_MAX_AGE_YEARS
         self.double_start_mode = "standard"
         self.double_start_years = []
+        # "camera" = Live-Stream vom real_scanner-Subprocess,
+        # "hardware" = USB-QR-Scanner der wie eine Tastatur eintippt.
+        self.scanner_mode = "camera"
 
     def load_event_settings(self):
         """Loads age range and tolerance config from setting.json near selected data source."""
@@ -1022,7 +1110,7 @@ class WeighingApp(tk.Tk):
             text="Cancel",
             command=popup.destroy,
             bg=THEME["error"],
-            fg="#f0f0f2",
+            fg=THEME["fg"],
             font=("Rubik", 10, "bold"),
             width=12,
         ).pack(side=tk.LEFT, padx=6)
@@ -1078,10 +1166,10 @@ class WeighingApp(tk.Tk):
         self.tolerance_hint_value_label.config(text=f"{tolerance:g} g")
 
     def prompt_for_data_source_selection(self):
-        """Prompts user to choose a data source when app starts without one."""
+        """Beim Start ohne gesetzte Datenquelle direkt das Settings-Fenster
+        oeffnen (ohne vorgeschaltetes Hinweis-Popup)."""
         if self.data_file_path:
             return
-        messagebox.showinfo("Achtung", "Bitte Datenquelle auswählen.")
         self.open_settings_window()
 
     def format_scale_weight(self, raw_weight: int) -> str:
@@ -1164,6 +1252,7 @@ class WeighingApp(tk.Tk):
         """Registers GUI-wide keyboard shortcuts."""
         self.bind_all("<Control-s>", self.handle_save_shortcut)
         self.bind_all("<Control-S>", self.handle_save_shortcut)
+        self.bind_all("<F12>", self._handle_qr_scan_request)
         self.search_entry.bind("<Return>", self.handle_enter)
 
     def _is_main_window_event(self, event) -> bool:
@@ -1312,9 +1401,9 @@ class WeighingApp(tk.Tk):
         lbl_style = {"bg": THEME["bg"], "fg": THEME["fg"], "font": ("Rubik", 11)}
         entry_style = {
             "bg": THEME["input_bg"],
-            "fg": "#f0f0f2",
+            "fg": THEME["fg"],
             "font": ("Rubik", 11),
-            "insertbackground": "#f0f0f2"
+            "insertbackground": THEME["fg"]
         }
 
         radio_style = {
@@ -1459,7 +1548,7 @@ class WeighingApp(tk.Tk):
             text="Abbrechen",
             command=popup.destroy,
             bg=THEME["error"],
-            fg="#f0f0f2",
+            fg=THEME["fg"],
             font=("Rubik", 10, "bold"),
             width=12,
         ).pack(side=tk.LEFT, padx=8)
@@ -1551,7 +1640,7 @@ class WeighingApp(tk.Tk):
             return
 
         popup_w = 520
-        popup_h = 360
+        popup_h = 460
         popup = tk.Toplevel(self)
         self.settings_popup = popup
         popup.title("Einstellungen")
@@ -1649,7 +1738,7 @@ class WeighingApp(tk.Tk):
             text="Daten laden",
             command=choose_data_file,
             bg=THEME["input_bg"],
-            fg="#f0f0f2",
+            fg=THEME["fg"],
             font=("Rubik", 10, "bold"),
             width=20,
         ).pack(pady=(8, 20))
@@ -1659,10 +1748,26 @@ class WeighingApp(tk.Tk):
             text="Kamera auswählen",
             command=self.open_camera_target_dialog,
             bg=THEME["input_bg"],
-            fg="#f0f0f2",
+            fg=THEME["fg"],
             font=("Rubik", 10, "bold"),
             width=20,
         ).pack(pady=(4, 12))
+
+        # Pass-Scanner-Eingabemodus: Kamera-Stream oder USB-Tastatur-Scanner
+        tk.Label(popup, text="Pass-Scanner-Eingabe", **lbl_style).pack(pady=(8, 4))
+        scanner_mode_label_to_value = {"Kamera": "camera", "Hardware-Scanner": "hardware"}
+        scanner_mode_value_to_label = {v: k for k, v in scanner_mode_label_to_value.items()}
+        scanner_mode_var = tk.StringVar(
+            value=scanner_mode_value_to_label.get(self.scanner_mode, "Kamera")
+        )
+        scanner_mode_combo = ttk.Combobox(
+            popup,
+            textvariable=scanner_mode_var,
+            values=list(scanner_mode_label_to_value.keys()),
+            state="readonly",
+            width=22,
+        )
+        scanner_mode_combo.pack(pady=(0, 12))
 
         def _on_settings_close():
             if popup == self.settings_popup:
@@ -1702,6 +1807,11 @@ class WeighingApp(tk.Tk):
 
             self.weight_decimal_places = selected_places
 
+            new_mode = scanner_mode_label_to_value.get(scanner_mode_var.get(), "camera")
+            if new_mode != self.scanner_mode:
+                self.scanner_mode = new_mode
+                self._apply_scanner_mode_ui()
+
             if self.pending_received_weight is not None and self.weight_popup is not None and self.weight_popup.winfo_exists():
                 self.show_weight_popup(self.pending_received_weight)
 
@@ -1725,20 +1835,11 @@ class WeighingApp(tk.Tk):
             text="Abbrechen",
             command=_on_settings_close,
             bg=THEME["error"],
-            fg="#f0f0f2",
+            fg=THEME["fg"],
             font=("Rubik", 10, "bold"),
             width=12,
         ).pack(side=tk.LEFT, padx=8)
         popup.protocol("WM_DELETE_WINDOW", _on_settings_close)
-
-    def request_camera_selection(self, target_role: str):
-        """Asks a connected client to open its camera selection dialog."""
-        if not self.ws_loop:
-            return
-        asyncio.run_coroutine_threadsafe(
-            self._send_camera_selection_request(target_role),
-            self.ws_loop,
-        )
 
     def send_scanner_popup_request(self):
         """Asks scanner client to open QR scan popup."""
@@ -1751,114 +1852,105 @@ class WeighingApp(tk.Tk):
         )
 
     def open_camera_target_dialog(self):
-        """Opens a small dialog to choose the target device."""
+        """Vereinheitlichter Picker: zwei Comboboxen (Waage, Pass-Scanner)
+        + 'Anwenden' sendet SET_CAMERA an die jeweiligen Subprozesse."""
+        from shared.list_available_cameras import list_available_cameras
+        cameras = list_available_cameras()
+        if not cameras:
+            messagebox.showwarning(
+                "Kamera",
+                "Keine Kameras gefunden.",
+                parent=self.settings_popup if self.settings_popup and self.settings_popup.winfo_exists() else self,
+            )
+            return
+
         parent = self.settings_popup if self.settings_popup and self.settings_popup.winfo_exists() else self
-        popup_w = 260
-        popup_h = 150
         popup = tk.Toplevel(parent)
-        popup.title("Kamera auswählen")
-        popup.geometry(f"{popup_w}x{popup_h}")
+        popup.title("Kameras zuweisen")
         popup.configure(bg=THEME["bg"])
         popup.resizable(False, False)
         if hasattr(popup, "transient"):
             popup.transient(parent)
-        popup.grab_set()
 
+        cam_labels = [f"[{i}] {name}" for i, name in cameras]
+
+        frame = tk.Frame(popup, bg=THEME["bg"], padx=20, pady=18)
+        frame.pack(fill="both", expand=True)
+
+        tk.Label(
+            frame, text="Waage:", bg=THEME["bg"], fg=THEME["fg"], font=("Rubik", 11)
+        ).grid(row=0, column=0, sticky="w", pady=6)
+        weight_combo = ttk.Combobox(frame, values=cam_labels, state="readonly", width=32)
+        weight_combo.current(0)
+        weight_combo.grid(row=0, column=1, padx=(10, 0), pady=6)
+
+        tk.Label(
+            frame, text="Pass-Scanner:", bg=THEME["bg"], fg=THEME["fg"], font=("Rubik", 11)
+        ).grid(row=1, column=0, sticky="w", pady=6)
+        scanner_combo = ttk.Combobox(frame, values=cam_labels, state="readonly", width=32)
+        scanner_combo.current(min(1, len(cameras) - 1))
+        scanner_combo.grid(row=1, column=1, padx=(10, 0), pady=6)
+
+        btn_row = tk.Frame(frame, bg=THEME["bg"])
+        btn_row.grid(row=2, column=0, columnspan=2, pady=(18, 0))
+
+        def apply_and_close():
+            weight_idx = cameras[weight_combo.current()][0]
+            scanner_idx = cameras[scanner_combo.current()][0]
+            self._send_set_camera("weight", weight_idx)
+            self._send_set_camera("scanner", scanner_idx)
+            popup.destroy()
+
+        tk.Button(
+            btn_row, text="Anwenden", command=apply_and_close,
+            bg=THEME["input_bg"], fg=THEME["fg"], font=("Rubik", 10, "bold"), width=12,
+        ).pack(side=tk.LEFT, padx=6)
+        tk.Button(
+            btn_row, text="Abbrechen", command=popup.destroy,
+            bg=THEME["input_bg"], fg=THEME["fg"], font=("Rubik", 10, "bold"), width=12,
+        ).pack(side=tk.LEFT, padx=6)
+
+        popup.protocol("WM_DELETE_WINDOW", popup.destroy)
         popup.update_idletasks()
         try:
-            parent.update_idletasks()
             root_x = parent.winfo_rootx()
             root_y = parent.winfo_rooty()
             root_w = parent.winfo_width()
             root_h = parent.winfo_height()
+            popup_w = popup.winfo_width()
+            popup_h = popup.winfo_height()
             x_pos = root_x + (root_w - popup_w) // 2
             y_pos = root_y + (root_h - popup_h) // 2
+            popup.geometry(f"+{max(x_pos, 0)}+{max(y_pos, 0)}")
         except Exception:
-            screen_w = popup.winfo_screenwidth()
-            screen_h = popup.winfo_screenheight()
-            x_pos = (screen_w - popup_w) // 2
-            y_pos = (screen_h - popup_h) // 2
-        popup.geometry(f"{popup_w}x{popup_h}+{max(x_pos, 0)}+{max(y_pos, 0)}")
+            pass
 
-        tk.Label(
-            popup,
-            text="Für welches Gerät?",
-            bg=THEME["bg"],
-            fg=THEME["fg"],
-            font=("Rubik", 11),
-        ).pack(pady=(18, 14))
+    def _send_set_camera(self, target_role: str, index: int):
+        """Sendet SET_CAMERA an die WS-Clients der gegebenen Rolle."""
+        if not self.ws_loop:
+            return
+        asyncio.run_coroutine_threadsafe(
+            self._send_set_camera_async(target_role, index), self.ws_loop
+        )
 
-        button_frame = tk.Frame(popup, bg=THEME["bg"])
-        button_frame.pack()
-
-        def choose_target(target_role: str):
-            popup.destroy()
-            self.request_camera_selection(target_role)
-
-        tk.Button(
-            button_frame,
-            text="Waage",
-            command=lambda: choose_target("weight"),
-            bg=THEME["input_bg"],
-            fg="#f0f0f2",
-            font=("Rubik", 10, "bold"),
-            width=10,
-        ).pack(side=tk.LEFT, padx=6)
-
-        tk.Button(
-            button_frame,
-            text="Scanner",
-            command=lambda: choose_target("scanner"),
-            bg=THEME["input_bg"],
-            fg="#f0f0f2",
-            font=("Rubik", 10, "bold"),
-            width=10,
-        ).pack(side=tk.LEFT, padx=6)
-
-        popup.protocol("WM_DELETE_WINDOW", popup.destroy)
-
-    async def _send_camera_selection_request(self, target_role: str):
-        """Sends OPEN_CAMERA_SELECTION to the requested client type."""
+    async def _send_set_camera_async(self, target_role: str, index: int):
         if target_role == "weight":
-            candidate_clients = list(self.weight_ws_clients)
-            target_label = "Waage"
+            candidates = list(self.weight_ws_clients)
         elif target_role == "scanner":
-            candidate_clients = list(self.scanner_ws_clients)
-            target_label = "QR Scanner"
+            candidates = list(self.scanner_ws_clients)
         else:
             return
-
-        if not candidate_clients:
-            self.after(
-                0,
-                lambda: messagebox.showwarning(
-                    "Kamera",
-                    f"Kein verbundener Client für {target_label} gefunden.",
-                    parent=self.settings_popup if self.settings_popup and self.settings_popup.winfo_exists() else self,
-                ),
+        if not candidates:
+            logger.warning(
+                "SET_CAMERA: kein verbundener Client fuer role=%s", target_role
             )
             return
-
-        if target_role == "scanner" and len(candidate_clients) > 1:
-            logger.info(
-                f"[WebSocket] Multiple scanner clients connected ({len(candidate_clients)}); "
-                "sending camera selection request to one client only."
-            )
-            candidate_clients = candidate_clients[:1]
-
-        msg = json.dumps({"type": "OPEN_CAMERA_SELECTION"}, ensure_ascii=False)
-        stale = []
-        for client in candidate_clients:
+        msg = json.dumps({"type": "SET_CAMERA", "index": index})
+        for client in candidates:
             try:
                 await client.send(msg)
             except Exception:
-                stale.append(client)
-
-        for client in stale:
-            self.weight_ws_clients.discard(client)
-            self.scanner_ws_clients.discard(client)
-            self.qr_ws_clients.discard(client)
-            self.ws_clients.discard(client)
+                logger.exception("SET_CAMERA send failed")
 
     async def _send_scanner_popup_request(self):
         """Sends OPEN_SCAN_POPUP to one connected scanner client."""
@@ -1985,6 +2077,23 @@ class WeighingApp(tk.Tk):
                     logger.info(f"[WebSocket] QR: {qr_data}")
                     continue
 
+                elif msg_type == "FRAME":
+                    data_b64 = payload.get("data")
+                    if isinstance(data_b64, str):
+                        self.after(0, lambda d=data_b64: self.apply_received_frame(d))
+                    continue
+
+                elif msg_type == "FRAME_SCANNER":
+                    data_b64 = payload.get("data")
+                    if isinstance(data_b64, str):
+                        self.after(0, lambda d=data_b64: self.apply_received_scanner_frame(d))
+                    continue
+
+                elif msg_type == "weight_failed":
+                    reason = str(payload.get("reason") or "OCR-Fehler")
+                    self.after(0, lambda r=reason: self.apply_weight_failed(r))
+                    continue
+
                 elif msg_type != "weight":
                     await websocket.send(
                         json.dumps(
@@ -2034,6 +2143,86 @@ class WeighingApp(tk.Tk):
         """Stores externally received weight and shows confirmation popup."""
         self.pending_received_weight = weight
         self.show_weight_popup(weight)
+
+    def apply_weight_failed(self, reason: str):
+        """Zeigt kurz eine Fehler-Meldung als Overlay im Kamera-Label,
+        wenn die OCR auf REQUEST_WEIGHT keine Ziffern erkannt hat."""
+        if not hasattr(self, "scale_camera_label"):
+            return
+        widget = self.scale_camera_label
+        # Vorhandenes Bild kurz zugunsten des Texts ausblenden ist optisch
+        # zu hart - stattdessen ein transientes Toplevel-Banner ueber dem Kamera-Bereich.
+        try:
+            x = widget.winfo_rootx()
+            y = widget.winfo_rooty()
+            w = widget.winfo_width()
+        except tk.TclError:
+            return
+
+        toast = tk.Toplevel(self)
+        toast.overrideredirect(True)
+        toast.configure(bg="#B7413F")
+        toast.attributes("-topmost", True)
+        tk.Label(
+            toast,
+            text=f"Gewicht-Erkennung fehlgeschlagen: {reason}",
+            bg="#B7413F",
+            fg="#ffffff",
+            font=("Rubik", 11, "bold"),
+            padx=14,
+            pady=8,
+        ).pack()
+        toast.update_idletasks()
+        toast.geometry(f"+{x + (w - toast.winfo_width()) // 2}+{y + 8}")
+        # Nach 2.5s automatisch schliessen, kein Klick noetig.
+        toast.after(2500, lambda: toast.destroy() if toast.winfo_exists() else None)
+
+    def _render_frame_to_label(self, data_b64: str, widget, photo_attr: str):
+        """Decodes a base64-JPEG-Frame und zeigt ihn skaliert auf einem Label."""
+        if Image is None or ImageTk is None:
+            return
+        if widget is None:
+            return
+        try:
+            jpeg_bytes = base64.b64decode(data_b64)
+            img = Image.open(BytesIO(jpeg_bytes))
+        except Exception:
+            logger.exception("Frame-Decode fehlgeschlagen")
+            return
+
+        try:
+            avail_w = max(widget.winfo_width() - 16, 1)
+            avail_h = max(widget.winfo_height() - 16, 1)
+        except tk.TclError:
+            return
+        if avail_w <= 1 or avail_h <= 1:
+            return
+        ratio = min(avail_w / img.width, avail_h / img.height, 1.0)
+        if ratio < 1.0:
+            img = img.resize((int(img.width * ratio), int(img.height * ratio)))
+
+        try:
+            photo = ImageTk.PhotoImage(img)
+        except Exception:
+            logger.exception("ImageTk.PhotoImage fehlgeschlagen")
+            return
+
+        setattr(self, photo_attr, photo)  # GC-Schutz
+        widget.config(image=photo, text="")
+
+    def apply_received_frame(self, data_b64: str):
+        """Frame vom weight-Subprocess -> linkes Kamera-Label."""
+        if hasattr(self, "scale_camera_label"):
+            self._render_frame_to_label(
+                data_b64, self.scale_camera_label, "_scale_camera_photo"
+            )
+
+    def apply_received_scanner_frame(self, data_b64: str):
+        """Frame vom real_scanner-Subprocess -> rechtes Kamera-Label."""
+        if hasattr(self, "scanner_camera_label"):
+            self._render_frame_to_label(
+                data_b64, self.scanner_camera_label, "_scanner_camera_photo"
+            )
 
     def get_selected_full_name(self) -> str:
         """Returns best available full name for the currently selected participant."""
@@ -2128,7 +2317,7 @@ class WeighingApp(tk.Tk):
                 text="Cancel",
                 command=self.cancel_pending_weight,
                 bg=THEME["error"],
-                fg="#f0f0f2",
+                fg=THEME["fg"],
                 font=("Rubik", 10, "bold"),
                 width=10,
             ).pack(side=tk.LEFT, padx=8)
@@ -2254,7 +2443,7 @@ class WeighingApp(tk.Tk):
         self.search_var = tk.StringVar()
         self.search_var.trace("w", self.filter_list)
         self.search_entry = tk.Entry(sidebar, textvariable=self.search_var, bg=THEME["input_bg"], 
-                                     fg=THEME["input_fg"], insertbackground="#f0f0f2", font=("Rubik", 12))
+                                     fg=THEME["input_fg"], insertbackground=THEME["fg"], font=("Rubik", 12))
         self.search_entry.pack(fill=tk.X, padx=10, pady=(18, 20), ipady=6)
         self.search_entry.bind("<FocusIn>", self.on_search_focus_in)
         self.search_entry.bind("<FocusOut>", self.on_search_focus_out)
@@ -2268,9 +2457,9 @@ class WeighingApp(tk.Tk):
         entry_scrollbar = tk.Scrollbar(list_frame)
         entry_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
-        self.listbox = tk.Listbox(list_frame, bg=THEME["input_bg"], fg=THEME["input_fg"], 
-                                  font=("Rubik", 14), selectbackground="#ffffff",
-                                  selectforeground="#000000",
+        self.listbox = tk.Listbox(list_frame, bg=THEME["input_bg"], fg=THEME["input_fg"],
+                                  font=("Rubik", 14), selectbackground=THEME["accent"],
+                                  selectforeground="#ffffff",
                                   yscrollcommand=entry_scrollbar.set, borderwidth=0,
                                   selectborderwidth=2, exportselection=False,
                                   activestyle="none")
@@ -2295,8 +2484,8 @@ class WeighingApp(tk.Tk):
         box_frame = tk.Frame(
             container,
             bg=THEME["bg"],
-            highlightbackground="#f0f0f2",
-            highlightcolor="#f0f0f2",
+            highlightbackground=THEME["fg"],
+            highlightcolor=THEME["fg"],
             highlightthickness=2,
         )
         self.details_box_frame = box_frame
@@ -2305,7 +2494,7 @@ class WeighingApp(tk.Tk):
             box_frame,
             text="",
             bg=THEME["bg"],
-            fg="#f0f0f2",
+            fg=THEME["fg"],
             font=("Rubik", 11, "bold"),
             anchor="center",
             justify="center",
@@ -2339,7 +2528,7 @@ class WeighingApp(tk.Tk):
             tolerance_row,
             text="",
             bg=THEME["bg"],
-            fg="#f0f0f2",
+            fg=THEME["fg"],
             font=("Rubik", 12, "bold"),
             width=20,
             anchor="w",
@@ -2350,7 +2539,7 @@ class WeighingApp(tk.Tk):
             tolerance_row,
             text="",
             bg=THEME["bg"],
-            fg="#f0f0f2",
+            fg=THEME["fg"],
             font=("Rubik", 12, "bold"),
             anchor="w",
             justify="left",
@@ -2407,9 +2596,69 @@ class WeighingApp(tk.Tk):
         )
         self.double_start_status_label.grid(row=9, column=0, columnspan=2, padx=14, pady=(16, 6), sticky="n")
 
+        # Live-Kamerabilder: links Waage (weight-Subprocess), rechts Pass-Scanner
+        # (real_scanner-Subprocess, nur aktiv wenn WEIGHIN_SCANNER_CAMERA gesetzt).
+        # Beide via WS-FRAME bzw. FRAME_SCANNER gestreamt.
+        self.scale_camera_label = tk.Label(
+            box_frame,
+            bg=THEME["secondary"],
+            text="Waagen-Kamera: warte auf Verbindung...",
+            fg="#9a9a9a",
+            font=("Rubik", 11),
+            anchor="center",
+            justify="center",
+        )
+        self.scale_camera_label.grid(
+            row=10, column=0,
+            padx=(14, 4), pady=(8, 8), sticky="nsew",
+        )
+        self._scale_camera_photo = None  # GC-Schutz fuer PhotoImage
+
+        self.scanner_cell = tk.Frame(box_frame, bg=THEME["bg"])
+        self.scanner_cell.grid(row=10, column=1, padx=(4, 14), pady=(8, 8), sticky="nsew")
+        self.scanner_camera_label = tk.Label(
+            self.scanner_cell,
+            bg=THEME["secondary"],
+            text="Pass-Scanner: keine Kamera konfiguriert\n(WEIGHIN_SCANNER_CAMERA setzen)",
+            fg="#9a9a9a",
+            font=("Rubik", 11),
+            anchor="center",
+            justify="center",
+        )
+        self._scanner_camera_photo = None  # GC-Schutz
+
+        # Hardware-Scanner-Modus: grosser Button anstelle des Kamera-Bilds.
+        # Klick oder F12 oeffnet ein Eingabe-Modal, in das der USB-Scanner tippt.
+        self.scanner_hardware_button = tk.Button(
+            self.scanner_cell,
+            text="QR scannen (F12)",
+            command=self.open_hardware_scan_input,
+            bg=THEME["accent"],
+            fg="#ffffff",
+            activebackground=THEME["accent"],
+            activeforeground="#ffffff",
+            font=("Rubik", 16, "bold"),
+            relief="flat",
+            cursor="hand2",
+        )
+
+        # Status-Banner unter dem Scanner-Bereich: zeigt nach dem Scan
+        # "Pass gültig / abgelaufen — Vorname Nachname".
+        self.scanner_status_label = tk.Label(
+            self.scanner_cell,
+            bg=THEME["secondary"],
+            fg="#9a9a9a",
+            text="",
+            font=("Rubik", 12, "bold"),
+            anchor="center",
+            pady=6,
+        )
+
+        self._apply_scanner_mode_ui()
+
         box_frame.rowconfigure(10, weight=1)
         action_row = tk.Frame(box_frame, bg=THEME["bg"])
-        action_row.grid(row=10, column=0, columnspan=2, padx=14, pady=(0, 20), sticky="sew")
+        action_row.grid(row=11, column=0, columnspan=2, padx=14, pady=(0, 20), sticky="sew")
         action_row.grid_columnconfigure(0, weight=1)
         action_row.grid_columnconfigure(1, weight=1)
 
@@ -2420,7 +2669,7 @@ class WeighingApp(tk.Tk):
 
         btn_opts = {
             "bg": THEME["input_bg"],
-            "fg": "#f0f0f2",
+            "fg": THEME["fg"],
             "font": ("Rubik", 10, "bold"),
             "bd": 1,
             "relief": "flat",
@@ -2474,9 +2723,9 @@ class WeighingApp(tk.Tk):
         delete_btn_opts.update(
             {
                 "bg": THEME["error"],
-                "fg": "#f0f0f2",
+                "fg": THEME["fg"],
                 "activebackground": THEME["error"],
-                "activeforeground": "#f0f0f2",
+                "activeforeground": THEME["fg"],
             }
         )
         self.btn_delete = tk.Button(
